@@ -2,6 +2,16 @@
 name = "ads111x-rs"
 version = "0.1.0"
 edition = "2024"
+description = "ADS1113/4/5 module/IC rust library. Use for reading ADC value (Analog to Digital Converter)."
+license = "MIT"
+repository = "https://git.fynjirby.dev/angsudo/ads111x-rs"
+keywords = [
+  "ADC",
+  "ads1113",
+  "ads1114",
+  "ads1115",
+  "embedded-hal",
+]
 
 [dependencies]
 embedded-hal = "1.0.0"
