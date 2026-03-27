@@ -1,6 +1,11 @@
+#![no_std]
+
+#[cfg(feature = "async")]
+use embedded_hal_async::i2c::I2c as AsyncI2c;
+
 use embedded_hal::i2c::I2c;
 
-pub struct ADS111x<I2C: I2c, const MODEL: u8> {
+pub struct ADS111x<I2C, const MODEL: u8> {
     address: Address,
     i2c: I2C,
     pub config: Config,
@@ -10,7 +15,8 @@ pub type ADS1115<I2C> = ADS111x<I2C, 5>;
 pub type ADS1114<I2C> = ADS111x<I2C, 4>;
 pub type ADS1113<I2C> = ADS111x<I2C, 3>;
 
-impl<I2C: I2c> ADS1113<I2C> {
+#[cfg(feature = "async")]
+impl<I2C> ADS1113<I2C> {
     pub fn new(i2c: I2C, config: Config) -> Self {
         Self {
             address: Address::Ground,
@@ -18,19 +24,22 @@ impl<I2C: I2c> ADS1113<I2C> {
             config,
         }
     }
+}
+
+impl<I2C: I2c> ADS1113<I2C> {
     fn read_channel_raw(&mut self) -> Result<i16, I2C::Error> {
-        let mut config = [1 << 7, (self.config.data_rate as u8)];
+        let mut config = [(1 << 7) | 1, (self.config.data_rate as u8)];
         let mut data = [0u8; 2];
 
-        self.i2c.write_read(
-            self.address as u8,
-            &[0x01, config[0], config[1]],
-            &mut config,
-        )?;
+        self.i2c
+            .write(self.address as u8, &[0x01, config[0], config[1]])?;
 
-        while ((config[0] >> 7) & 0b1) == 1 {
+        loop {
             self.i2c
                 .write_read(self.address as u8, &[0x01], &mut config)?;
+            if (config[0] & 0x80) != 0 {
+                break;
+            }
         }
 
         self.i2c
@@ -43,7 +52,37 @@ impl<I2C: I2c> ADS1113<I2C> {
     }
 }
 
-impl<I2C: I2c> ADS1114<I2C> {
+#[cfg(feature = "async")]
+impl<I2C: AsyncI2c> ADS1113<I2C> {
+    async fn read_channel_asyncraw(&mut self) -> Result<i16, I2C::Error> {
+        let mut config = [(1 << 7) | 1, (self.config.data_rate as u8)];
+        let mut data = [0u8; 2];
+
+        self.i2c
+            .write(self.address as u8, &[0x01, config[0], config[1]])
+            .await?;
+
+        loop {
+            self.i2c
+                .write_read(self.address as u8, &[0x01], &mut config)
+                .await?;
+            if (config[0] & 0x80) != 0 {
+                break;
+            }
+        }
+
+        self.i2c
+            .write_read(self.address as u8, &[0x00], &mut data)
+            .await?;
+        Ok(i16::from_be_bytes(data))
+    }
+
+    pub async fn read_asyncadc(&mut self) -> Result<i16, I2C::Error> {
+        self.read_channel_asyncraw().await
+    }
+}
+
+impl<I2C> ADS1114<I2C> {
     pub fn new(i2c: I2C, config: Config) -> Self {
         Self {
             address: Address::Ground,
@@ -51,9 +90,22 @@ impl<I2C: I2c> ADS1114<I2C> {
             config,
         }
     }
+}
+
+impl<I2C: I2c> ADS1114<I2C> {
+    /// Configures the ALERT/RDY pin as a conversion ready pin.
+    /// Note: `config.comp_que` must NOT be `DisableComparator` (11b) for this to work.
+    pub fn enable_conversion_ready_pin(&mut self) -> Result<(), I2C::Error> {
+        // Set Hi_thresh MSB to 1 (0x8000)
+        self.i2c.write(self.address as u8, &[0x03, 0x80, 0x00])?;
+        // Set Lo_thresh MSB to 0 (0x0000)
+        self.i2c.write(self.address as u8, &[0x02, 0x00, 0x00])?;
+        Ok(())
+    }
+
     fn read_channel_raw(&mut self) -> Result<i16, I2C::Error> {
         let mut config = [
-            (self.config.gain as u8) | (1 << 7),
+            (self.config.gain as u8) | (1 << 7) | 1,
             (self.config.comp_que as u8)
                 | (self.config.comp_lat as u8)
                 | (self.config.comp_pol as u8)
@@ -62,15 +114,15 @@ impl<I2C: I2c> ADS1114<I2C> {
         ];
         let mut data = [0u8; 2];
 
-        self.i2c.write_read(
-            self.address as u8,
-            &[0x01, config[0], config[1]],
-            &mut config,
-        )?;
+        self.i2c
+            .write(self.address as u8, &[0x01, config[0], config[1]])?;
 
-        while ((config[0] >> 7) & 0b1) == 1 {
+        loop {
             self.i2c
                 .write_read(self.address as u8, &[0x01], &mut config)?;
+            if (config[0] & 0x80) != 0 {
+                break;
+            }
         }
 
         self.i2c
@@ -83,7 +135,58 @@ impl<I2C: I2c> ADS1114<I2C> {
     }
 }
 
-impl<I2C: I2c> ADS1115<I2C> {
+#[cfg(feature = "async")]
+impl<I2C: AsyncI2c> ADS1114<I2C> {
+    /// Configures the ALERT/RDY pin as a conversion ready pin.
+    /// Note: `config.comp_que` must NOT be `DisableComparator` (11b) for this to work.
+    pub async fn enable_async_conversion_ready_pin(&mut self) -> Result<(), I2C::Error> {
+        // Set Hi_thresh MSB to 1 (0x8000)
+        self.i2c
+            .write(self.address as u8, &[0x03, 0x80, 0x00])
+            .await?;
+        // Set Lo_thresh MSB to 0 (0x0000)
+        self.i2c
+            .write(self.address as u8, &[0x02, 0x00, 0x00])
+            .await?;
+        Ok(())
+    }
+
+    async fn read_channel_asyncraw(&mut self) -> Result<i16, I2C::Error> {
+        let mut config = [
+            (self.config.gain as u8) | (1 << 7) | 1,
+            (self.config.comp_que as u8)
+                | (self.config.comp_lat as u8)
+                | (self.config.comp_pol as u8)
+                | (self.config.comp_mode as u8)
+                | (self.config.data_rate as u8),
+        ];
+        let mut data = [0u8; 2];
+
+        self.i2c
+            .write(self.address as u8, &[0x01, config[0], config[1]])
+            .await?;
+
+        loop {
+            self.i2c
+                .write_read(self.address as u8, &[0x01], &mut config)
+                .await?;
+            if (config[0] & 0x80) != 0 {
+                break;
+            }
+        }
+
+        self.i2c
+            .write_read(self.address as u8, &[0x00], &mut data)
+            .await?;
+        Ok(i16::from_be_bytes(data))
+    }
+
+    pub async fn read_asyncadc(&mut self) -> Result<i16, I2C::Error> {
+        self.read_channel_asyncraw().await
+    }
+}
+
+impl<I2C> ADS1115<I2C> {
     pub fn new(address: Address, i2c: I2C, config: Config) -> Self {
         Self {
             address,
@@ -91,9 +194,22 @@ impl<I2C: I2c> ADS1115<I2C> {
             config,
         }
     }
+}
+
+impl<I2C: I2c> ADS1115<I2C> {
+    /// Configures the ALERT/RDY pin as a conversion ready pin.
+    /// Note: `config.comp_que` must NOT be `DisableComparator` (11b) for this to work.
+    pub fn enable_conversion_ready_pin(&mut self) -> Result<(), I2C::Error> {
+        // Set Hi_thresh MSB to 1 (0x8000)
+        self.i2c.write(self.address as u8, &[0x03, 0x80, 0x00])?;
+        // Set Lo_thresh MSB to 0 (0x0000)
+        self.i2c.write(self.address as u8, &[0x02, 0x00, 0x00])?;
+        Ok(())
+    }
+
     fn read_channel_raw(&mut self, mux: u8) -> Result<i16, I2C::Error> {
         let mut config = [
-            (self.config.gain as u8) | (1 << 7) | (mux << 4),
+            (self.config.gain as u8) | (1 << 7) | (mux << 4) | 1,
             (self.config.comp_que as u8)
                 | (self.config.comp_lat as u8)
                 | (self.config.comp_pol as u8)
@@ -102,15 +218,15 @@ impl<I2C: I2c> ADS1115<I2C> {
         ];
         let mut data = [0u8; 2];
 
-        self.i2c.write_read(
-            self.address as u8,
-            &[0x01, config[0], config[1]],
-            &mut config,
-        )?;
+        self.i2c
+            .write(self.address as u8, &[0x01, config[0], config[1]])?;
 
-        while ((config[0] >> 7) & 0b1) == 1 {
+        loop {
             self.i2c
                 .write_read(self.address as u8, &[0x01], &mut config)?;
+            if (config[0] & 0x80) != 0 {
+                break;
+            }
         }
 
         self.i2c
@@ -159,13 +275,98 @@ impl<I2C: I2c> ADS1115<I2C> {
     }
 }
 
+#[cfg(feature = "async")]
+impl<I2C: AsyncI2c> ADS1115<I2C> {
+    /// Configures the ALERT/RDY pin as a conversion ready pin.
+    /// Note: `config.comp_que` must NOT be `DisableComparator` (11b) for this to work.
+    pub async fn enable_async_conversion_ready_pin(&mut self) -> Result<(), I2C::Error> {
+        // Set Hi_thresh MSB to 1 (0x8000)
+        self.i2c
+            .write(self.address as u8, &[0x03, 0x80, 0x00])
+            .await?;
+        // Set Lo_thresh MSB to 0 (0x0000)
+        self.i2c
+            .write(self.address as u8, &[0x02, 0x00, 0x00])
+            .await?;
+        Ok(())
+    }
+
+    async fn read_channel_asyncraw(&mut self, mux: u8) -> Result<i16, I2C::Error> {
+        let mut config = [
+            (self.config.gain as u8) | (1 << 7) | (mux << 4) | 1,
+            (self.config.comp_que as u8)
+                | (self.config.comp_lat as u8)
+                | (self.config.comp_pol as u8)
+                | (self.config.comp_mode as u8)
+                | (self.config.data_rate as u8),
+        ];
+        let mut data = [0u8; 2];
+
+        self.i2c
+            .write(self.address as u8, &[0x01, config[0], config[1]])
+            .await?;
+
+        loop {
+            self.i2c
+                .write_read(self.address as u8, &[0x01], &mut config)
+                .await?;
+            if (config[0] & 0x80) != 0 {
+                break;
+            }
+        }
+
+        self.i2c
+            .write_read(self.address as u8, &[0x00], &mut data)
+            .await?;
+        Ok(i16::from_be_bytes(data))
+    }
+
+    pub async fn read_async_adc_a0(&mut self) -> Result<i16, I2C::Error> {
+        self.read_channel_asyncraw(0b100).await
+    }
+
+    pub async fn read_async_adc_a1(&mut self) -> Result<i16, I2C::Error> {
+        self.read_channel_asyncraw(0b101).await
+    }
+
+    pub async fn read_async_adc_a2(&mut self) -> Result<i16, I2C::Error> {
+        self.read_channel_asyncraw(0b110).await
+    }
+
+    pub async fn read_async_adc_a3(&mut self) -> Result<i16, I2C::Error> {
+        self.read_channel_asyncraw(0b111).await
+    }
+
+    pub async fn read_async_adc_a0n1(&mut self) -> Result<i16, I2C::Error> {
+        self.read_channel_asyncraw(0b000).await
+    }
+
+    pub async fn read_async_adc_a0n3(&mut self) -> Result<i16, I2C::Error> {
+        self.read_channel_asyncraw(0b001).await
+    }
+
+    pub async fn read_async_adc_a1n3(&mut self) -> Result<i16, I2C::Error> {
+        self.read_channel_asyncraw(0b010).await
+    }
+
+    pub async fn read_async_adc_a2n3(&mut self) -> Result<i16, I2C::Error> {
+        self.read_channel_asyncraw(0b011).await
+    }
+
+    pub async fn read_async_4adc(&mut self) -> Result<[i16; 4], I2C::Error> {
+        let mut values = [0i16; 4];
+        for (i, val) in values.iter_mut().enumerate() {
+            *val = self.read_channel_asyncraw(0b100 + i as u8).await?;
+        }
+        Ok(values)
+    }
+}
+
 /**
 
 ## Config
 
 Send the configuration to the device. But some config can't be send due to some model limitation.
-
-
 
 */
 #[derive(Debug, Clone, Copy, Default)]
@@ -176,6 +377,32 @@ pub struct Config {
     pub comp_pol: CompPol,
     pub comp_lat: CompLat,
     pub comp_que: CompQue,
+}
+
+impl Config {
+    pub fn with_gain(self, gain: Gain) -> Self {
+        Self { gain, ..self }
+    }
+
+    pub fn with_data_rate(self, data_rate: DataRate) -> Self {
+        Self { data_rate, ..self }
+    }
+
+    pub fn with_comp_mode(self, comp_mode: CompMode) -> Self {
+        Self { comp_mode, ..self }
+    }
+
+    pub fn with_comp_pol(self, comp_pol: CompPol) -> Self {
+        Self { comp_pol, ..self }
+    }
+
+    pub fn with_comp_lat(self, comp_lat: CompLat) -> Self {
+        Self { comp_lat, ..self }
+    }
+
+    pub fn with_comp_que(self, comp_que: CompQue) -> Self {
+        Self { comp_que, ..self }
+    }
 }
 
 // NOTE: First Bit configuration
